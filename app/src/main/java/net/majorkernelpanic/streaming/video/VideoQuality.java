@@ -113,11 +113,18 @@ public class VideoQuality {
 		for (Iterator<Size> it = supportedSizes.iterator(); it.hasNext();) {
 			Size size = it.next();
 			supportedSizesStr += size.width+"x"+size.height+(it.hasNext()?", ":"");
-			int dist = Math.abs(quality.resX - size.width);
-			if (dist<minDist) {
-				minDist = dist;
+			//Modified: optimise the logic to determine closest supported resolution
+			if (size.width == quality.resX && size.height == quality.resY) {
 				v.resX = size.width;
 				v.resY = size.height;
+				return v;
+			} else {
+				int dist = Math.abs(quality.resX - size.width) + Math.abs(quality.resY - size.height);
+				if (dist<minDist) {
+					minDist = dist;
+					v.resX = size.width;
+					v.resY = size.height;
+				}
 			}
 		}
 		Log.v(TAG, supportedSizesStr);
@@ -142,6 +149,26 @@ public class VideoQuality {
 		}
 		Log.v(TAG,supportedFpsRangesStr);
 		return maxFps;
+	}
+
+	public static int[] determineClosestFramerate(Camera.Parameters parameters, VideoQuality quality) {
+		int[] fps = new int[]{0,0};
+		int targetFps = quality.framerate*1000;
+		String supportedFpsRangesStr = "Supported frame rates: ";
+		List<int[]> supportedFpsRanges = parameters.getSupportedPreviewFpsRange();
+		for (Iterator<int[]> it = supportedFpsRanges.iterator(); it.hasNext();) {
+			int[] interval = it.next();
+			// Intervals are returned as integers, for example "29970" means "29.970" FPS.
+			supportedFpsRangesStr += interval[0]/1000+"-"+interval[1]/1000+"fps"+(it.hasNext()?", ":"");
+			if (interval[0]==interval[1] && interval[1]>fps[1]) {
+				fps = interval;
+				if (interval[1] >= targetFps) {
+					break;
+				}
+			}
+		}
+		Log.v(TAG,supportedFpsRangesStr);
+		return fps;
 	}
 	
 }

@@ -41,6 +41,7 @@ package net.majorkernelpanic.streaming.gl;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 
 import android.annotation.SuppressLint;
 import android.graphics.SurfaceTexture;
@@ -158,6 +159,8 @@ public class TextureManager {
 
 		GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
 		checkGlError("glDrawArrays");
+
+		updateViewport();
 		GLES20.glFinish();
 	}
 
@@ -208,6 +211,8 @@ public class TextureManager {
 		GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T,
 				GLES20.GL_CLAMP_TO_EDGE);
 		checkGlError("glTexParameter");
+
+		updateViewport();
 		
 		mSurfaceTexture = new SurfaceTexture(mTextureID);
 		return mSurfaceTexture;
@@ -216,7 +221,7 @@ public class TextureManager {
 	public void release() {
 		mSurfaceTexture = null;
 	}
-	
+
 	/**
 	 * Replaces the fragment shader.  Pass in null to reset to default.
 	 */
@@ -229,6 +234,13 @@ public class TextureManager {
 		if (mProgram == 0) {
 			throw new RuntimeException("failed creating program");
 		}
+	}
+
+	private void updateViewport() {
+		IntBuffer buf = IntBuffer.allocate(4);
+		GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, buf);
+		int [] array = buf.array();
+		GLES20.glViewport(array[0], array[1], array[2], array[3]);
 	}
 
 	private int loadShader(int shaderType, String source) {

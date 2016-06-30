@@ -20,7 +20,10 @@
 
 package net.majorkernelpanic.streaming.hw;
 
+import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
 
 import android.media.MediaCodecInfo;
 import android.util.Log;
@@ -68,13 +71,17 @@ public class NV21Convertor {
 	
 	public void setEncoderColorFormat(int colorFormat) {
 		switch (colorFormat) {
-		case MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar:
-		case MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar:
-		case MediaCodecInfo.CodecCapabilities.COLOR_TI_FormatYUV420PackedSemiPlanar:
+		// NV21 YYYYYYYYVUVU
+		case MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar: // 21 NV12 YYYYYYYYUVUV
+		case MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar: // 39 NV12 YYYYYYYYUVUV
+		case MediaCodecInfo.CodecCapabilities.COLOR_TI_FormatYUV420PackedSemiPlanar: // 0x7f000100 NV12 YYYYYYYYUVUV
+		//Modified: add all YUV420 color format
+		case MediaCodecInfo.CodecCapabilities.COLOR_QCOM_FormatYUV420SemiPlanar: // 0x7fa30c00 NV12 YYYYYYYYUVUV
 			setPlanar(false);
-			break;	
-		case MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar:
-		case MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar:
+			break;
+		// YV12 YYYYYYYYVVUU
+		case MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar: // 19 I420 YYYYYYYYUUVV
+		case MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar: // 20 I420 YYYYYYYYUUVV
 			setPlanar(true);
 			break;
 		}
@@ -119,18 +126,50 @@ public class NV21Convertor {
 		}
 		
 		if (!mPlanar) {
-			if (mSliceHeight==mHeight && mStride==mWidth) {
+			if (mSliceHeight == mHeight && mStride == mWidth) {
 				// Swaps U and V
 				if (!mPanesReversed) {
-					for (int i = mSize; i < mSize+mSize/2; i += 2) {
-						mBuffer[0] = data[i+1];
-						data[i+1] = data[i];
-						data[i] = mBuffer[0]; 
+					//used for COLOR_FormatYUV420SemiPlanar = 21
+					//used for COLOR_FormatYUV420PackedSemiPlanar = 39
+					for (int i = mSize; i < mSize + mSize / 2; i += 2) {
+						mBuffer[0] = data[i + 1];
+						data[i + 1] = data[i];
+						data[i] = mBuffer[0];
 					}
+
+					//Modified: This algorithm used to transfer the color format from
+					//YYYYYYYYUVUV to YUYYUYYVYYVY but there is a mediacodec correspond
+					//document declare that COLOR_FormatYUV420PackedPlanar is same to
+					//COLOR_FormatYUV420Planar, temporarily comment
+//					Byte[] byteData = new Byte[data.length];
+//					int k = 0;
+//					for (byte temp : data) {
+//						byteData[k++] = temp;
+//					}
+//					ArrayList<Byte> srcByteList = new ArrayList<Byte>(Arrays.asList(byteData));
+//					for (int i = mSize, j = 0; i < mSize + mSize / 2 - 1; i += 1) {
+//						srcByteList.add(1 + 2 * (i - mSize) + j, srcByteList.get(i));
+//						srcByteList.remove(i + 1);
+//						i += 1;
+//						j += 1;
+//						if (i + 1 > mSize + mSize / 2 - 1) {
+//							srcByteList.add(1 + 2 * (i - mSize) + j, srcByteList.get(i));
+//							srcByteList.remove(i + 1);
+//						} else {
+//							srcByteList.add(1 + 2 * (i - mSize) + j, srcByteList.get(i + 1));
+//							srcByteList.remove(i + 2);
+//							j += 1;
+//						}
+//					}
+//					Byte[] bytesData = srcByteList.toArray(new Byte[srcByteList.size()]);
+//					int l=0;
+//					for(Byte b: bytesData) {
+//						data[l++] = b.byteValue();
+//					}
 				}
-				if (mYPadding>0) {
+				if (mYPadding > 0) {
 					System.arraycopy(data, 0, mBuffer, 0, mSize);
-					System.arraycopy(data, mSize, mBuffer, mSize+mYPadding, mSize/2);
+					System.arraycopy(data, mSize, mBuffer, mSize + mYPadding, mSize / 2);
 					return mBuffer;
 				}
 				return data;
@@ -139,6 +178,8 @@ public class NV21Convertor {
 			if (mSliceHeight==mHeight && mStride==mWidth) {
 				// De-interleave U and V
 				if (!mPanesReversed) {
+					//used for COLOR_FormatYUV420Planar = 19
+					//used for COLOR_FormatYUV420PackedPlanar = 20
 					for (int i = 0; i < mSize/4; i+=1) {
 						mBuffer[i] = data[mSize+2*i+1];
 						mBuffer[mSize/4+i] = data[mSize+2*i];
@@ -161,6 +202,10 @@ public class NV21Convertor {
 		}
 		
 		return data;
-	}	
-	
+	}
+
+	@Override
+	public String toString() {
+		return "width="+mWidth+" height="+mHeight+" stride="+mStride+" sliceHeight="+mSliceHeight+" size="+mSize+" planar="+mPlanar+" panesRev="+mPanesReversed+" ypad="+mYPadding;
+	}
 }

@@ -82,6 +82,9 @@ public class EncoderDebugger {
 	private final static int NB_DECODED = 34;
 	private final static int NB_ENCODED = 50;
 
+	private int encodeElapsed = 5000000;
+	private int decodeElapsed = 15000000;
+
 	private int mDecoderColorFormat, mEncoderColorFormat;
 	private String mDecoderName, mEncoderName, mErrorLog;
 	private MediaCodec mEncoder, mDecoder;
@@ -357,7 +360,6 @@ public class EncoderDebugger {
 			editor.putBoolean(PREF_PREFIX+resolution+"reversed", mNV21.getUVPanesReversed());
 			editor.putString(PREF_PREFIX+resolution+"encoderName", mEncoderName);
 			editor.putInt(PREF_PREFIX+resolution+"colorFormat", mEncoderColorFormat);
-			editor.putString(PREF_PREFIX+resolution+"encoderName", mEncoderName);
 			editor.putString(PREF_PREFIX+resolution+"pps", mB64PPS);
 			editor.putString(PREF_PREFIX+resolution+"sps", mB64SPS);
 		}
@@ -657,7 +659,7 @@ public class EncoderDebugger {
 				if (len<128) {
 					outputBuffers[index].get(csd,0,len);
 					if (len>0 && csd[0]==0 && csd[1]==0 && csd[2]==0 && csd[3]==1) {
-						// Parses the SPS and PPS, they could be in two different packets and in a different order 
+						// Parses the SPS and PPS, they could be in two different packets and in a different order
 						//depending on the phone so we don't make any assumption about that
 						while (p<len) {
 							while (!(csd[p+0]==0 && csd[p+1]==0 && csd[p+2]==0 && csd[p+3]==1) && p+3<len) p++;
@@ -672,7 +674,7 @@ public class EncoderDebugger {
 							p += 4;
 							q = p;
 						}
-					}					
+					}
 				}
 				mEncoder.releaseOutputBuffer(index, false);
 			}
@@ -695,7 +697,7 @@ public class EncoderDebugger {
 		ByteBuffer[] encInputBuffers = mEncoder.getInputBuffers();
 		ByteBuffer[] encOutputBuffers = mEncoder.getOutputBuffers();
 
-		while (elapsed<5000000) {
+		while (elapsed < encodeElapsed) {
 			// Feeds the encoder with an image
 			encInputIndex = mEncoder.dequeueInputBuffer(1000000/FRAMERATE);
 			if (encInputIndex>=0) {
@@ -741,7 +743,7 @@ public class EncoderDebugger {
 		ByteBuffer[] decOutputBuffers = mDecoder.getOutputBuffers();
 		BufferInfo info = new BufferInfo();
 
-		while (elapsed<3000000) {
+		while (elapsed < decodeElapsed) {
 
 			// Feeds the decoder with a NAL unit
 			if (i<NB_ENCODED) {

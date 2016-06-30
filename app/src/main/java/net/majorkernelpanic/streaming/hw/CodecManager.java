@@ -39,13 +39,15 @@ public class CodecManager {
 		MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar,
 		MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
 		MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar,
-		MediaCodecInfo.CodecCapabilities.COLOR_TI_FormatYUV420PackedSemiPlanar
+		MediaCodecInfo.CodecCapabilities.COLOR_TI_FormatYUV420PackedSemiPlanar,
+		//Modified: add all supported YUV420 color format
+		MediaCodecInfo.CodecCapabilities.COLOR_QCOM_FormatYUV420SemiPlanar
 	};		
 
 	private static Codec[] sEncoders = null;
 	private static Codec[] sDecoders = null;
 
-	static class Codec {
+	public static class Codec {
 		public Codec(String name, Integer[] formats) {
 			this.name = name;
 			this.formats = formats;
@@ -108,6 +110,7 @@ public class CodecManager {
 	@SuppressLint("NewApi")
 	public synchronized static Codec[] findDecodersForMimeType(String mimeType) {
 		if (sDecoders != null) return sDecoders;
+		boolean haveGoogleDecoder = false;
 		ArrayList<Codec> decoders = new ArrayList<Codec>();
 
 		// We loop through the decoders, apparently this can take up to a sec (testes on a GS3)
@@ -133,6 +136,11 @@ public class CodecManager {
 							}
 						}
 
+						//Modified: some device don't get "OMX.google.h264.decoder"
+						if (codecInfo.getName().equals("OMX.google.h264.decoder")) {
+							haveGoogleDecoder = true;
+						}
+
 						Codec codec = new Codec(codecInfo.getName(), (Integer[]) formats.toArray(new Integer[formats.size()]));
 						decoders.add(codec);
 					} catch (Exception e) {
@@ -140,6 +148,13 @@ public class CodecManager {
 					}
 				}
 			}
+		}
+
+		//Modified: some device don't get "OMX.google.h264.decoder"
+		if (!haveGoogleDecoder) {
+			Integer[] format = {Integer.valueOf(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar)};
+			Codec codec = new Codec("OMX.google.h264.decoder", format);
+			decoders.add(codec);
 		}
 
 		sDecoders = (Codec[]) decoders.toArray(new Codec[decoders.size()]);

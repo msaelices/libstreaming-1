@@ -20,28 +20,24 @@
 
 package net.majorkernelpanic.streaming.video;
 
-import java.io.FileDescriptor;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-
-import net.majorkernelpanic.streaming.MediaStream;
-import net.majorkernelpanic.streaming.Stream;
-import net.majorkernelpanic.streaming.exceptions.CameraInUseException;
-import net.majorkernelpanic.streaming.exceptions.ConfNotSupportedException;
-import net.majorkernelpanic.streaming.exceptions.InvalidSurfaceException;
-import net.majorkernelpanic.streaming.gl.SurfaceView;
-import net.majorkernelpanic.streaming.hw.EncoderDebugger;
-import net.majorkernelpanic.streaming.hw.NV21Convertor;
-import net.majorkernelpanic.streaming.rtp.MediaCodecInputStream;
 import android.annotation.SuppressLint;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.ImageFormat;
+import android.graphics.Matrix;
+import android.graphics.Rect;
+import android.graphics.YuvImage;
 import android.hardware.Camera;
 import android.hardware.Camera.CameraInfo;
 import android.hardware.Camera.Parameters;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.media.CamcorderProfile;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -53,15 +49,37 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceHolder.Callback;
 
+import net.majorkernelpanic.streaming.MediaStream;
+import net.majorkernelpanic.streaming.Stream;
+import net.majorkernelpanic.streaming.exceptions.CameraInUseException;
+import net.majorkernelpanic.streaming.exceptions.ConfNotSupportedException;
+import net.majorkernelpanic.streaming.exceptions.InvalidSurfaceException;
+import net.majorkernelpanic.streaming.gl.SurfaceView;
+import net.majorkernelpanic.streaming.hw.EncoderDebugger;
+import net.majorkernelpanic.streaming.hw.NV21Convertor;
+import net.majorkernelpanic.streaming.rtp.MediaCodecInputStream;
+import net.majorkernelpanic.streaming.utils.SerialExecutor;
+import net.majorkernelpanic.streaming.utils.YuvRotator;
+
+import java.io.ByteArrayOutputStream;
+import java.io.FileDescriptor;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.Semaphore;
+
 /** 
  * Don't use this class directly.
  */
-public abstract class VideoStream extends MediaStream {
+public abstract class VideoStream extends MediaStream implements SensorEventListener, Camera.AutoFocusCallback {
 
 	protected final static String TAG = "VideoStream";
 
 	protected VideoQuality mRequestedQuality = VideoQuality.DEFAULT_VIDEO_QUALITY.clone();
-	protected VideoQuality mQuality = mRequestedQuality.clone(); 
+	protected VideoQuality mQuality = mRequestedQuality.clone();
 	protected SurfaceHolder.Callback mSurfaceHolderCallback = null;
 	protected SurfaceView mSurfaceView = null;
 	protected SharedPreferences mSettings = null;
@@ -82,14 +100,27 @@ public abstract class VideoStream extends MediaStream {
 	protected String mEncoderName;
 	protected int mEncoderColorFormat;
 	protected int mCameraImageFormat;
-	protected int mMaxFps = 0;	
+	protected int mMaxFps = 0;
+	protected SerialExecutor mExecutor;
+	protected BlockingQueue<byte[]> mDataQueue;
+
+	//Modified: some device have problem to auto focus with the FOCUS_MODE_CONTINUOUS_PICTURE mode
+	//use ACCELEROMETER sensor to implement the auto focus function
+	private Context mContext;
+	private Sensor mAccelerometer;
+	private SensorManager mSensorManager;
+	private float motionX = 0;
+	private float motionY = 0;
+	private float motionZ = 0;
+
+	private boolean mRequestedPortrait = false;
 
 	/** 
 	 * Don't use this class directly.
 	 * Uses CAMERA_FACING_BACK by default.
 	 */
 	public VideoStream() {
-		this(CameraInfo.CAMERA_FACING_BACK);
+		this(CameraInfo.CAMERA_FACING_BACK, null);
 	}	
 
 	/** 
@@ -97,9 +128,38 @@ public abstract class VideoStream extends MediaStream {
 	 * @param camera Can be either CameraInfo.CAMERA_FACING_BACK or CameraInfo.CAMERA_FACING_FRONT
 	 */
 	@SuppressLint("InlinedApi")
-	public VideoStream(int camera) {
+	public VideoStream(int camera, Context context) {
 		super();
+		setContext(context);
 		setCamera(camera);
+
+		//Modified: some device have problem to auto focus with the FOCUS_MODE_CONTINUOUS_PICTURE mode
+		//use ACCELEROMETER sensor to implement the auto focus function
+//		mSensorManager = (SensorManager) mContext.getSystemService(Context.SENSOR_SERVICE);
+//		mAccelerometer = mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+	}
+
+	/**
+	 * Sets the context to use the sensor
+	 * @param context
+	 */
+	public void setContext(Context context) {
+		mContext = context;
+	}
+
+	/**
+	 * Gets the context
+	 */
+	public Context getContext() {
+		return mContext;
+	}
+
+	/**
+	 * Force video output to portrait.
+	 * @param portrait If true, output video will be portrait.
+	 */
+	public void setPortrait(boolean portrait) {
+		mRequestedPortrait = portrait;
 	}
 
 	/**
@@ -283,9 +343,21 @@ public abstract class VideoStream extends MediaStream {
 
 	/** Stops the stream. */
 	public synchronized void stop() {
+		//Modified: some device have problem to auto focus with the FOCUS_MODE_CONTINUOUS_PICTURE mode
+		//use ACCELEROMETER sensor to implement the auto focus function
+		if (mSensorManager != null) {
+			mSensorManager.unregisterListener(this, mAccelerometer);
+		}
 		if (mCamera != null) {
 			if (mMode == MODE_MEDIACODEC_API) {
 				mCamera.setPreviewCallbackWithBuffer(null);
+				if (mDataQueue != null) {
+					mDataQueue = null;
+				}
+				if( mExecutor != null ) {
+					mExecutor.shoutDown();
+					mExecutor = null;
+				}
 			}
 			if (mMode == MODE_MEDIACODEC_API_2) {
 				((SurfaceView)mSurfaceView).removeMediaCodecSurface();
@@ -313,6 +385,13 @@ public abstract class VideoStream extends MediaStream {
 		if (!mPreviewStarted) {
 			createCamera();
 			updateCamera();
+		}
+
+		//Modified: some device have problem to auto focus with the FOCUS_MODE_CONTINUOUS_PICTURE mode
+		//use ACCELEROMETER sensor to implement the auto focus function
+		if (mSensorManager != null) {
+			mSensorManager.registerListener(this, mAccelerometer
+					, SensorManager.SENSOR_DELAY_NORMAL);
 		}
 	}
 
@@ -343,13 +422,15 @@ public abstract class VideoStream extends MediaStream {
 
 		try {
 			mMediaRecorder = new MediaRecorder();
-			mMediaRecorder.setCamera(mCamera);
-			mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
-			mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
-			mMediaRecorder.setVideoEncoder(mVideoEncoder);
-			mMediaRecorder.setPreviewDisplay(mSurfaceView.getHolder().getSurface());
-			mMediaRecorder.setVideoSize(mRequestedQuality.resX,mRequestedQuality.resY);
-			mMediaRecorder.setVideoFrameRate(mRequestedQuality.framerate);
+			mMediaRecorder.setCamera( mCamera );
+			mMediaRecorder.setVideoSource( MediaRecorder.VideoSource.CAMERA );
+			mMediaRecorder.setOutputFormat( MediaRecorder.OutputFormat.THREE_GPP );
+			mMediaRecorder.setVideoEncoder( mVideoEncoder );
+			mMediaRecorder.setPreviewDisplay( mSurfaceView.getHolder().getSurface() );
+			mMediaRecorder.setVideoSize( mRequestedQuality.resX, mRequestedQuality.resY );
+			mMediaRecorder.setVideoFrameRate( mRequestedQuality.framerate );
+			mMediaRecorder.setProfile( CamcorderProfile.get(mCameraId,CamcorderProfile.QUALITY_HIGH) );
+//			mMediaRecorder.setOrientationHint(90);
 
 			// The bandwidth actually consumed is often above what was requested 
 			mMediaRecorder.setVideoEncodingBitRate((int)(mRequestedQuality.bitrate*0.8));
@@ -422,7 +503,6 @@ public abstract class VideoStream extends MediaStream {
 	 */
 	@SuppressLint("NewApi")
 	protected void encodeWithMediaCodecMethod1() throws RuntimeException, IOException {
-
 		Log.d(TAG,"Video encoded using the MediaCodec API with a buffer");
 
 		// Updates the parameters of the camera if needed
@@ -430,7 +510,7 @@ public abstract class VideoStream extends MediaStream {
 		updateCamera();
 
 		// Estimates the frame rate of the camera
-		measureFramerate();
+//		measureFramerate();
 
 		// Starts the preview if needed
 		if (!mPreviewStarted) {
@@ -446,40 +526,51 @@ public abstract class VideoStream extends MediaStream {
 		EncoderDebugger debugger = EncoderDebugger.debug(mSettings, mQuality.resX, mQuality.resY);
 		final NV21Convertor convertor = debugger.getNV21Convertor();
 
-		mMediaCodec = MediaCodec.createByCodecName(debugger.getEncoderName());
+		String name = debugger.getEncoderName();
+		int format = debugger.getEncoderColorFormat();
+		Log.d(TAG, "Encode1: "+name+"("+format+") "+mQuality.resX+"x"+mQuality.resY+" "+mQuality.bitrate+"bps"+" "+mQuality.framerate+"fps");
+		Log.d(TAG, "Convert: " + convertor.toString());
+
+		mMediaCodec = MediaCodec.createByCodecName(name);
 		MediaFormat mediaFormat = MediaFormat.createVideoFormat("video/avc", mQuality.resX, mQuality.resY);
 		mediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, mQuality.bitrate);
 		mediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, mQuality.framerate);	
-		mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT,debugger.getEncoderColorFormat());
+		mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, format);
 		mediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 		mMediaCodec.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
 		mMediaCodec.start();
 
+		mDataQueue = new LinkedBlockingDeque<>();
+		mExecutor = new SerialExecutor( new SerialExecutor.ThreadExecutor(  ) );
+		mExecutor.execute(new RotationRunner(convertor));
+
 		Camera.PreviewCallback callback = new Camera.PreviewCallback() {
-			long now = System.nanoTime()/1000, oldnow = now, i=0;
-			ByteBuffer[] inputBuffers = mMediaCodec.getInputBuffers();
+//			long now = System.nanoTime()/1000, oldnow = now, i=0;
+//			ByteBuffer[] inputBuffers = mMediaCodec.getInputBuffers();
 			@Override
 			public void onPreviewFrame(byte[] data, Camera camera) {
-				oldnow = now;
-				now = System.nanoTime()/1000;
-				if (i++>3) {
-					i = 0;
-					//Log.d(TAG,"Measured: "+1000000L/(now-oldnow)+" fps.");
-				}
-				try {
-					int bufferIndex = mMediaCodec.dequeueInputBuffer(500000);
-					if (bufferIndex>=0) {
-						inputBuffers[bufferIndex].clear();
-						if (data == null) Log.e(TAG,"Symptom of the \"Callback buffer was to small\" problem...");
-						else convertor.convert(data, inputBuffers[bufferIndex]);
-						mMediaCodec.queueInputBuffer(bufferIndex, 0, inputBuffers[bufferIndex].position(), now, 0);
-					} else {
-						Log.e(TAG,"No buffer available !");
-					}
-				} finally {
-					mCamera.addCallbackBuffer(data);
-				}				
+//				oldnow = now;
+//				now = System.nanoTime()/1000;
+//				if (i++>3) {
+//					i = 0;
+//					//Log.d(TAG,"Measured: "+1000000L/(now-oldnow)+" fps.");
+//				}
+//				try {
+//					int bufferIndex = mMediaCodec.dequeueInputBuffer(500000);
+//					if (bufferIndex>=0) {
+//						inputBuffers[bufferIndex].clear();
+//						if (data == null) Log.e(TAG,"Symptom of the \"Callback buffer was to small\" problem...");
+//						else convertor.convert(data, inputBuffers[bufferIndex]);
+//						mMediaCodec.queueInputBuffer(bufferIndex, 0, inputBuffers[bufferIndex].position(), now, 0);
+//					} else {
+//						Log.e(TAG,"No buffer available !");
+//					}
+//				} finally {
+//					mCamera.addCallbackBuffer(data);
+//				}
+				mDataQueue.add(data);
 			}
+
 		};
 		
 		for (int i=0;i<10;i++) mCamera.addCallbackBuffer(new byte[convertor.getBufferSize()]);
@@ -507,14 +598,16 @@ public abstract class VideoStream extends MediaStream {
 		updateCamera();
 
 		// Estimates the frame rate of the camera
-		measureFramerate();
+//		measureFramerate();
 
 		EncoderDebugger debugger = EncoderDebugger.debug(mSettings, mQuality.resX, mQuality.resY);
+
+		Log.d(TAG, "Encode2: "+mQuality.resX+"x"+mQuality.resY+" "+mQuality.bitrate+"bps"+" "+mQuality.framerate+"fps");
 
 		mMediaCodec = MediaCodec.createByCodecName(debugger.getEncoderName());
 		MediaFormat mediaFormat = MediaFormat.createVideoFormat("video/avc", mQuality.resX, mQuality.resY);
 		mediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, mQuality.bitrate);
-		mediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, mQuality.framerate);	
+		mediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, mQuality.framerate);
 		mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
 		mediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 		mMediaCodec.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -600,7 +693,37 @@ public abstract class VideoStream extends MediaStream {
 				if (parameters.getFlashMode()!=null) {
 					parameters.setFlashMode(mFlashEnabled?Parameters.FLASH_MODE_TORCH:Parameters.FLASH_MODE_OFF);
 				}
-				parameters.setRecordingHint(true);
+				//Modified: set other parameters.
+				String focusMode = Parameters.FOCUS_MODE_CONTINUOUS_PICTURE;
+				List<String> supportedFocusModes = parameters.getSupportedFocusModes();
+				if (supportedFocusModes != null && supportedFocusModes.contains(focusMode)) {
+					parameters.setFocusMode(focusMode);
+				}
+				String colorEffect = Parameters.EFFECT_NONE;
+				List<String> supportedColorEffects = parameters.getSupportedColorEffects();
+				if (supportedColorEffects != null && supportedColorEffects.contains(colorEffect)) {
+					parameters.setColorEffect(colorEffect);
+				}
+				String sceneMode = Parameters.SCENE_MODE_AUTO;
+				List<String> supportedSceneModes = parameters.getSupportedSceneModes();
+				if (supportedSceneModes != null && supportedSceneModes.contains(sceneMode)) {
+					parameters.setSceneMode(sceneMode);
+				}
+				String antiBanding = Parameters.ANTIBANDING_AUTO;
+				List<String> supportedAntiBanding = parameters.getSupportedAntibanding();
+				if (supportedAntiBanding != null && supportedAntiBanding.contains(antiBanding)) {
+					parameters.setAntibanding(antiBanding);
+				}
+				if (parameters.isAutoExposureLockSupported()) {
+					parameters.setAutoExposureLock(false);
+				}
+				if (parameters.isAutoWhiteBalanceLockSupported()) {
+					parameters.setAutoWhiteBalanceLock(false);
+				}
+				if (parameters.isZoomSupported()) {
+					parameters.setZoom(0);
+				}
+				parameters.setRecordingHint( false );
 				mCamera.setParameters(parameters);
 				mCamera.setDisplayOrientation(mOrientation);
 
@@ -640,26 +763,70 @@ public abstract class VideoStream extends MediaStream {
 		}	
 	}
 
+//	protected synchronized void updateCamera() throws RuntimeException {
+//
+//		// The camera is already correctly configured
+//		if (mUpdated) return;
+//
+//		if (mPreviewStarted) {
+//			mPreviewStarted = false;
+//			mCamera.stopPreview();
+//		}
+//
+//		Parameters parameters = mCamera.getParameters();
+//		mQuality = VideoQuality.determineClosestSupportedResolution(parameters, mQuality);
+//		int[] max = VideoQuality.determineMaximumSupportedFramerate(parameters);
+//
+//		double ratio = (double)mQuality.resX/(double)mQuality.resY;
+//		mSurfaceView.requestAspectRatio(ratio);
+//
+//		parameters.setPreviewFormat(mCameraImageFormat);
+//		parameters.setPreviewSize(mQuality.resX, mQuality.resY);
+//		parameters.setPreviewFpsRange(max[0], max[1]);
+//
+//		try {
+//			mCamera.setParameters(parameters);
+//			mCamera.setDisplayOrientation(mOrientation);
+//			mCamera.startPreview();
+//			mPreviewStarted = true;
+//			mUpdated = true;
+//		} catch (RuntimeException e) {
+//			destroyCamera();
+//			throw e;
+//		}
+//	}
+
 	protected synchronized void updateCamera() throws RuntimeException {
-		
+
 		// The camera is already correctly configured
 		if (mUpdated) return;
-		
+
 		if (mPreviewStarted) {
 			mPreviewStarted = false;
 			mCamera.stopPreview();
 		}
 
 		Parameters parameters = mCamera.getParameters();
-		mQuality = VideoQuality.determineClosestSupportedResolution(parameters, mQuality);
-		int[] max = VideoQuality.determineMaximumSupportedFramerate(parameters);
-		
+//		mQuality = VideoQuality.determineClosestSupportedResolution(parameters, mQuality);
+//		int[] max = VideoQuality.determineMaximumSupportedFramerate(parameters);
+
+		// Modified: Find best camera preview resolution and frame rate.
+		VideoQuality cameraVQ = VideoQuality.determineClosestSupportedResolution(parameters, getCameraQuality());
+//		int[] max = VideoQuality.determineMaximumSupportedFramerate(parameters);
+//		mQuality.framerate = max[1]/1000;
+//		mRequestedQuality.framerate = max[1]/1000;
+
 		double ratio = (double)mQuality.resX/(double)mQuality.resY;
 		mSurfaceView.requestAspectRatio(ratio);
-		
+
+//		Log.d(TAG, "Camera : " + cameraVQ.resX + "x" + cameraVQ.resY + " " + max[0]/1000 + "-" + max[1]/1000 + "fps");
+		Log.d(TAG, "Camera : " + cameraVQ.resX + "x" + cameraVQ.resY + " " + mQuality.framerate + "fps");
+		Log.d(TAG, "Surface: " + mQuality.resX + "x" + mQuality.resY + " " + ratio);
+
 		parameters.setPreviewFormat(mCameraImageFormat);
-		parameters.setPreviewSize(mQuality.resX, mQuality.resY);
-		parameters.setPreviewFpsRange(max[0], max[1]);
+		parameters.setPreviewSize(cameraVQ.resX, cameraVQ.resY);
+//		parameters.setPreviewFpsRange(max[0], max[1]);
+		parameters.setPreviewFrameRate(mQuality.framerate);
 
 		try {
 			mCamera.setParameters(parameters);
@@ -703,42 +870,232 @@ public abstract class VideoStream extends MediaStream {
 	 * We will then use this average frame rate with the MediaCodec.  
 	 * Blocks the thread in which this function is called.
 	 */
-	private void measureFramerate() {
-		final Semaphore lock = new Semaphore(0);
+//	private void measureFramerate() {
+//		final Semaphore lock = new Semaphore(0);
+//
+//		final Camera.PreviewCallback callback = new Camera.PreviewCallback() {
+//			int i = 0, t = 0;
+//			long now, oldnow, count = 0;
+//			@Override
+//			public void onPreviewFrame(byte[] data, Camera camera) {
+//				i++;
+//				now = System.nanoTime()/1000;
+//				if (i>3) {
+//					t += now - oldnow;
+//					count++;
+//				}
+//				if (i>20) {
+//					mQuality.framerate = (int) (1000000/(t/count)+1);
+//					lock.release();
+//				}
+//				oldnow = now;
+//			}
+//		};
+//
+//		mCamera.setPreviewCallback(callback);
+//
+//		try {
+//			lock.tryAcquire(2,TimeUnit.SECONDS);
+//			Log.d(TAG,"Actual framerate: "+mQuality.framerate);
+//			if (mSettings != null) {
+//				Editor editor = mSettings.edit();
+//				editor.putInt(PREF_PREFIX+"fps"+mRequestedQuality.framerate+","+mCameraImageFormat+","+mRequestedQuality.resX+mRequestedQuality.resY, mQuality.framerate);
+//				editor.commit();
+//			}
+//		} catch (InterruptedException e) {}
+//
+//		mCamera.setPreviewCallback(null);
+//
+//	}
 
-		final Camera.PreviewCallback callback = new Camera.PreviewCallback() {
-			int i = 0, t = 0;
-			long now, oldnow, count = 0;
-			@Override
-			public void onPreviewFrame(byte[] data, Camera camera) {
-				i++;
-				now = System.nanoTime()/1000;
-				if (i>3) {
-					t += now - oldnow;
-					count++;
+	private class RotationRunner implements Runnable{
+
+		public RotationRunner( NV21Convertor convertor ){
+			mConvertor =  convertor;
+		}
+
+		private NV21Convertor mConvertor;
+
+		private void queueFrame( byte[] data ) {
+			long now = System.nanoTime()/1000;
+			try {
+				if( null != mMediaCodec ) {
+					ByteBuffer[] inputBuffers = mMediaCodec.getInputBuffers();
+					if ( null != inputBuffers ) {
+						int bufferIndex = mMediaCodec.dequeueInputBuffer( 500000 );
+						if ( bufferIndex >= 0 ) {
+							inputBuffers[ bufferIndex ].clear();
+							if ( data == null ) {
+								Log.e( TAG, "Symptom of the \"Callback buffer was to small\" problem..." );
+							} else {
+								mConvertor.convert( data, inputBuffers[ bufferIndex ] );
+							}
+							mMediaCodec.queueInputBuffer( bufferIndex, 0, inputBuffers[ bufferIndex ].position(), now, 0 );
+						} else {
+							Log.e( TAG, "No buffer available !" );
+						}
+					}
 				}
-				if (i>20) {
-					mQuality.framerate = (int) (1000000/(t/count)+1);
-					lock.release();
+			} catch (java.lang.IllegalStateException e) {
+				e.printStackTrace();
+			} catch (NullPointerException e) {
+				e.printStackTrace();
+			} finally {
+				mCamera.addCallbackBuffer(data);
+			}
+		}
+
+		@Override
+		public void run() {
+			Log.d(TAG, "RotationRunner start");
+			while (/*!Thread.currentThread().isInterrupted() &&*/ mDataQueue != null) {
+				try {
+					VideoQuality vq = getCameraQuality();
+					byte[] data = mDataQueue.take();	// Block until preview data arrives.
+					if (mCameraId == CameraInfo.CAMERA_FACING_BACK) {
+						data = YuvRotator.yuv420spRotate90( data, vq.resX, vq.resY );
+					} else {
+						data = YuvRotator.yuv420spRotate270(data, vq.resX, vq.resY);
+
+						// Modified: mirroring the data in NV21
+						data = mirrorData(data, vq.resY, vq.resX);
+
+						// Modified: mirroring the data when use the front camera
+						// this method need to compress the yuvimage to the jpeg image
+						// which is a little bit slow in some low end devices
+//						ByteArrayOutputStream os = new ByteArrayOutputStream();
+//						YuvImage yuv = new YuvImage(data, ImageFormat.NV21, vq.resY, vq.resX, null);
+//						yuv.compressToJpeg(new Rect(0, 0, vq.resY, vq.resX), 100, os);
+//						data = os.toByteArray();
+//
+//						Bitmap newImage = null;
+//						Bitmap cameraBitmap;
+//						if (data != null) {
+//							cameraBitmap = BitmapFactory.decodeByteArray(data, 0, (data != null) ? data.length : 0);
+//							// use matrix to reverse image data and keep it normal
+//							Matrix mtx = new Matrix();
+//							//this will prevent mirror effect
+//							mtx.preScale(-1.0f, 1.0f);
+//							// Rotating Bitmap , create real image that we want
+//							newImage = Bitmap.createBitmap(cameraBitmap, 0, 0, cameraBitmap.getWidth(), cameraBitmap.getHeight(), mtx, true);
+//						}
+////						int size = newImage.getRowBytes() * newImage.getHeight();
+////						ByteBuffer byteBuffer = ByteBuffer.allocate(size);
+////						newImage.copyPixelsToBuffer(byteBuffer);
+////						data = byteBuffer.array();
+//						data = getNV21(newImage.getWidth(), newImage.getHeight(), newImage);
+					}
+					queueFrame( data );
 				}
-				oldnow = now;
+				catch ( InterruptedException e ) {
+					e.printStackTrace();
+				}
 			}
-		};
+			Log.d(TAG, "RotationRunner end");
+		}
 
-		mCamera.setPreviewCallback(callback);
+	}
 
-		try {
-			lock.tryAcquire(2,TimeUnit.SECONDS);
-			Log.d(TAG,"Actual framerate: "+mQuality.framerate);
-			if (mSettings != null) {
-				Editor editor = mSettings.edit();
-				editor.putInt(PREF_PREFIX+"fps"+mRequestedQuality.framerate+","+mCameraImageFormat+","+mRequestedQuality.resX+mRequestedQuality.resY, mQuality.framerate);
-				editor.commit();
+	// Modified: mirroring the data
+	private byte[] mirrorData(byte[] src, int srcWidth, int srcHeight) {
+		byte[] dst = new byte[ srcWidth * srcHeight * 3 / 2 ];
+		int wh;
+		int uvHeight;
+		wh = srcWidth * srcHeight;
+		uvHeight = srcHeight >> 1;
+
+		int k = 0;
+		int nPos = 0;
+		for (int i = 0; i < srcHeight; i++) {
+			nPos += srcWidth;
+			for (int j = 0; j < srcWidth; j++) {
+				dst[k] = src[nPos - j - 1];
+				k++;
 			}
-		} catch (InterruptedException e) {}
+		}
+		nPos = wh + srcWidth - 1;
+		for (int i = 0; i < uvHeight; i++) {
+			for (int j = 0; j < srcWidth; j += 2) {
+				dst[k] = src[nPos - j - 1];
+				dst[k + 1] = src[nPos - j];
+				k += 2;
+			}
+			nPos += srcWidth;
+		}
+		return dst;
+	}
 
-		mCamera.setPreviewCallback(null);
+	// Modified: convert the data from bitmap to NV21
+	private byte[] getNV21(int inputWidth, int inputHeight, Bitmap scaled) {
+		int[] argb = new int[inputWidth * inputHeight];
+		scaled.getPixels(argb, 0, inputWidth, 0, 0, inputWidth, inputHeight);
+		byte[] yuv = new byte[inputWidth*inputHeight*3/2];
+		encodeYUV420SP(yuv, argb, inputWidth, inputHeight);
+		scaled.recycle();
+		return yuv;
+	}
 
-	}	
+	private void encodeYUV420SP(byte[] yuv420sp, int[] argb, int width, int height) {
+		final int frameSize = width * height;
+		int yIndex = 0;
+		int uvIndex = frameSize;
+		int a, R, G, B, Y, U, V;
+		int index = 0;
+		for (int j = 0; j < height; j++) {
+			for (int i = 0; i < width; i++) {
+				a = (argb[index] & 0xff000000) >> 24; // a is not used obviously
+				R = (argb[index] & 0xff0000) >> 16;
+				G = (argb[index] & 0xff00) >> 8;
+				B = (argb[index] & 0xff) >> 0;
+
+				// well known RGB to YUV algorithm
+				Y = ( (  66 * R + 129 * G +  25 * B + 128) >> 8) +  16;
+				U = ( ( -38 * R -  74 * G + 112 * B + 128) >> 8) + 128;
+				V = ( ( 112 * R -  94 * G -  18 * B + 128) >> 8) + 128;
+
+				// NV21 has a plane of Y and interleaved planes of VU each sampled by a factor of 2
+				// meaning for every 4 Y pixels there are 1 V and 1 U.  Note the sampling is every other
+				// pixel AND every other scanline.
+				yuv420sp[yIndex++] = (byte) ((Y < 0) ? 0 : ((Y > 255) ? 255 : Y));
+				if (j % 2 == 0 && index % 2 == 0) {
+					yuv420sp[uvIndex++] = (byte)((V<0) ? 0 : ((V > 255) ? 255 : V));
+					yuv420sp[uvIndex++] = (byte)((U<0) ? 0 : ((U > 255) ? 255 : U));
+				}
+
+				index ++;
+			}
+		}
+	}
+
+	private VideoQuality getCameraQuality() {
+		VideoQuality vq = mQuality.clone();
+		if (mRequestedPortrait && mQuality.resX < mQuality.resY) {
+			vq.resX = mQuality.resY;
+			vq.resY = mQuality.resX;
+		}
+		return vq;
+	}
+
+	//Modified: some device have problem to auto focus with the FOCUS_MODE_CONTINUOUS_PICTURE mode
+	//use ACCELEROMETER sensor to implement the auto focus function
+	public void onAccuracyChanged(Sensor arg0, int arg1) { }
+
+	public void onSensorChanged(SensorEvent event) {
+		if(Math.abs(event.values[0] - motionX) > 0.2
+				|| Math.abs(event.values[1] - motionY) > 0.2
+				|| Math.abs(event.values[2] - motionZ) > 0.2 ) {
+			try {
+				mCamera.autoFocus(this);
+			} catch (RuntimeException e) { }
+		}
+
+		motionX = event.values[0];
+		motionY = event.values[1];
+		motionZ = event.values[2];
+	}
+
+	public void onAutoFocus(boolean success, Camera camera) {
+
+	}
 
 }

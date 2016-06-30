@@ -51,7 +51,7 @@ import android.view.Surface;
 @SuppressLint("NewApi")
 public class SurfaceManager {
 
-	public final static String TAG = "TextureManager";
+	public final static String TAG = "SurfaceManager";
 
 	private static final int EGL_RECORDABLE_ANDROID = 0x3142;
 

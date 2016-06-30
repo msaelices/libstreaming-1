@@ -85,6 +85,8 @@ public class SurfaceView extends android.view.SurfaceView implements Runnable, O
 
 	// Allows to force the aspect ratio of the preview
 	private ViewAspectRatioMeasurer mVARM = new ViewAspectRatioMeasurer();
+
+	private int mFrameRate = 30;
 	
 	public SurfaceView(Context context, AttributeSet attrs) {
 		super(context, attrs);
@@ -94,6 +96,10 @@ public class SurfaceView extends android.view.SurfaceView implements Runnable, O
 
 	public void setAspectRatioMode(int mode) {
 		mAspectRatioMode = mode;
+	}
+
+	public void setFrameRate(int frameRate) {
+		mFrameRate = frameRate;
 	}
 	
 	public SurfaceTexture getSurfaceTexture() {
@@ -141,7 +147,7 @@ public class SurfaceView extends android.view.SurfaceView implements Runnable, O
 			long ts = 0, oldts = 0;
 			while (mRunning) {
 				synchronized (mSyncObject) {
-					mSyncObject.wait(2500);
+					mSyncObject.wait(1000/mFrameRate);
 					if (mFrameAvailable) {
 						mFrameAvailable = false;
 
