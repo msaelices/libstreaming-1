@@ -1,18 +1,18 @@
 /*
  * Copyright (C) 2011-2014 GUIGUI Simon, fyhertz@gmail.com
- * 
+ *
  * This file is part of libstreaming (https://github.com/fyhertz/libstreaming)
- * 
+ *
  * Spydroid is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This source code is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this source code; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
@@ -20,6 +20,9 @@
 
 package net.majorkernelpanic.streaming;
 
+import java.lang.ref.WeakReference;
+
+import android.app.Activity;
 import android.content.Context;
 import android.hardware.Camera;
 import android.os.Build;
@@ -81,7 +84,6 @@ public class SessionBuilder {
     private Context mContext;
     private int mVideoEncoder = VIDEO_H263;
     private int mAudioEncoder = AUDIO_AMRNB;
-//    private int mCamera = Camera.CameraInfo.CAMERA_FACING_BACK;
     private int mCamera;
     private int mTimeToLive = 64;
     private int mOrientation;
@@ -90,6 +92,7 @@ public class SessionBuilder {
     private String mOrigin = null;
     private String mDestination = null;
     private Session.Callback mCallback = null;
+    private WeakReference<Activity> mActivityRef;
 
     // Removes the default public constructor
     private SessionBuilder() {
@@ -124,12 +127,11 @@ public class SessionBuilder {
      */
     public Session build() {
         Session session;
-        if ( hasFrontFacingCamera() ) {
-                mCamera = Camera.CameraInfo.CAMERA_FACING_FRONT;
-            } else if ( hasBackFacingCamera() ){
-                mCamera = Camera.CameraInfo.CAMERA_FACING_BACK;
-            }
-
+        if (hasBackFacingCamera()) {
+            mCamera = Camera.CameraInfo.CAMERA_FACING_BACK;
+        } else if (hasFrontFacingCamera()){
+            mCamera = Camera.CameraInfo.CAMERA_FACING_FRONT;
+        }
 
         session = new Session();
         session.setOrigin( mOrigin );
@@ -163,10 +165,11 @@ public class SessionBuilder {
 
         if ( session.getVideoTrack() != null ) {
             VideoStream video = session.getVideoTrack();
-            video.setFlashState( mFlash );
-            video.setVideoQuality( mVideoQuality );
-            video.setSurfaceView( mSurfaceView );
-            video.setPreviewOrientation( mOrientation );
+            video.setFlashState(mFlash);
+            video.setActivityRef(mActivityRef);
+            video.setVideoQuality(mVideoQuality);
+            video.setSurfaceView(mSurfaceView);
+            video.setPreviewOrientation(mOrientation);
             Log.d( TAG, "video mOrientation  = " + mOrientation );
             video.setDestinationPorts( 5006 );
         }
@@ -187,6 +190,14 @@ public class SessionBuilder {
      **/
     public SessionBuilder setContext( Context context ) {
         mContext = context;
+        return this;
+    }
+
+    /**
+     * Sets the activity.
+     **/
+    public SessionBuilder setActivity( Activity activity ) {
+        mActivityRef = new WeakReference<>(activity);
         return this;
     }
 

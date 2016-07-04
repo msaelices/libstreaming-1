@@ -1,18 +1,18 @@
 /*
  * Copyright (C) 2011-2015 GUIGUI Simon, fyhertz@gmail.com
- * 
+ *
  * This file is part of libstreaming (https://github.com/fyhertz/libstreaming)
- * 
+ *
  * Spydroid is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This source code is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this source code; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
@@ -21,6 +21,7 @@
 package net.majorkernelpanic.streaming.video;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
@@ -42,12 +43,14 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaRecorder;
+import android.os.Build;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceHolder.Callback;
+import android.view.WindowManager;
 
 import net.majorkernelpanic.streaming.MediaStream;
 import net.majorkernelpanic.streaming.Stream;
@@ -65,13 +68,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.Semaphore;
 
-/** 
+/**
  * Don't use this class directly.
  */
 public abstract class VideoStream extends MediaStream implements SensorEventListener, Camera.AutoFocusCallback {
@@ -95,7 +99,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 	protected boolean mUnlocked = false;
 	protected boolean mPreviewStarted = false;
 	protected boolean mUpdated = false;
-	
+
 	protected String mMimeType;
 	protected String mEncoderName;
 	protected int mEncoderColorFormat;
@@ -103,6 +107,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 	protected int mMaxFps = 0;
 	protected SerialExecutor mExecutor;
 	protected BlockingQueue<byte[]> mDataQueue;
+	protected WeakReference<Activity> mActivityRef;
 
 	//Modified: some device have problem to auto focus with the FOCUS_MODE_CONTINUOUS_PICTURE mode
 	//use ACCELEROMETER sensor to implement the auto focus function
@@ -115,15 +120,15 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 
 	private boolean mRequestedPortrait = false;
 
-	/** 
+	/**
 	 * Don't use this class directly.
 	 * Uses CAMERA_FACING_BACK by default.
 	 */
 	public VideoStream() {
 		this(CameraInfo.CAMERA_FACING_BACK, null);
-	}	
+	}
 
-	/** 
+	/**
 	 * Don't use this class directly
 	 * @param camera Can be either CameraInfo.CAMERA_FACING_BACK or CameraInfo.CAMERA_FACING_FRONT
 	 */
@@ -154,6 +159,10 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 		return mContext;
 	}
 
+	public void setActivityRef(WeakReference<Activity> activityRef) {
+		mActivityRef = activityRef;
+	}
+
 	/**
 	 * Force video output to portrait.
 	 * @param portrait If true, output video will be portrait.
@@ -179,28 +188,27 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 		}
 	}
 
-	/**	Switch between the front facing and the back facing camera of the phone. 
-	 * If {@link #startPreview()} has been called, the preview will be  briefly interrupted. 
+	/**	Switch between the front facing and the back facing camera of the phone.
+	 * If {@link #startPreview()} has been called, the preview will be  briefly interrupted.
 	 * If {@link #start()} has been called, the stream will be  briefly interrupted.
-	 * You should not call this method from the main thread if you are already streaming. 
-	 * @throws IOException 
-	 * @throws RuntimeException 
+	 * You should not call this method from the main thread if you are already streaming.
+	 * @throws IOException
+	 * @throws RuntimeException
 	 **/
 	public void switchCamera() throws RuntimeException, IOException {
 		if (Camera.getNumberOfCameras() == 1) throw new IllegalStateException("Phone only has one camera !");
-		boolean streaming = mStreaming;
-		boolean previewing = mCamera!=null && mCameraOpenedManually; 
-		mCameraId = (mCameraId == CameraInfo.CAMERA_FACING_BACK) ? CameraInfo.CAMERA_FACING_FRONT : CameraInfo.CAMERA_FACING_BACK; 
+		boolean previewing = mCamera!=null && mCameraOpenedManually;
+		mCameraId = (mCameraId == CameraInfo.CAMERA_FACING_BACK) ? CameraInfo.CAMERA_FACING_FRONT : CameraInfo.CAMERA_FACING_BACK;
 		setCamera(mCameraId);
 		stopPreview();
 		mFlashEnabled = false;
 		if (previewing) startPreview();
-		if (streaming) start(); 
+		if (mStreaming) start();
 	}
 
 	/**
-	 * Returns the id of the camera currently selected. 
-	 * Can be either {@link CameraInfo#CAMERA_FACING_BACK} or 
+	 * Returns the id of the camera currently selected.
+	 * Can be either {@link CameraInfo#CAMERA_FACING_BACK} or
 	 * {@link CameraInfo#CAMERA_FACING_FRONT}.
 	 */
 	public int getCamera() {
@@ -208,7 +216,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 	}
 
 	/**
-	 * Sets a Surface to show a preview of recorded media (video). 
+	 * Sets a Surface to show a preview of recorded media (video).
 	 * You can call this method at any time and changes will take effect next time you call {@link #start()}.
 	 */
 	public synchronized void setSurfaceView(SurfaceView view) {
@@ -272,7 +280,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 		}
 	}
 
-	/** 
+	/**
 	 * Toggles the LED of the phone if it has one.
 	 * You can get the current state of the flash with {@link VideoStream#getFlashState()}.
 	 */
@@ -285,7 +293,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 		return mFlashEnabled;
 	}
 
-	/** 
+	/**
 	 * Sets the orientation of the preview.
 	 * @param orientation The orientation of the preview
 	 */
@@ -293,9 +301,9 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 		mRequestedOrientation = orientation;
 		mUpdated = false;
 	}
-	
-	/** 
-	 * Sets the configuration of the stream. You can call this method at any time 
+
+	/**
+	 * Sets the configuration of the stream. You can call this method at any time
 	 * and changes will take effect next time you call {@link #configure()}.
 	 * @param videoQuality Quality of the stream
 	 */
@@ -306,15 +314,15 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 		}
 	}
 
-	/** 
-	 * Returns the quality of the stream.  
+	/**
+	 * Returns the quality of the stream.
 	 */
 	public VideoQuality getVideoQuality() {
 		return mRequestedQuality;
 	}
 
 	/**
-	 * Some data (SPS and PPS params) needs to be stored when {@link #getSessionDescription()} is called 
+	 * Some data (SPS and PPS params) needs to be stored when {@link #getSessionDescription()} is called
 	 * @param prefs The SharedPreferences that will be used to save SPS and PPS parameters
 	 */
 	public void setPreferences(SharedPreferences prefs) {
@@ -322,17 +330,17 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 	}
 
 	/**
-	 * Configures the stream. You need to call this before calling {@link #getSessionDescription()} 
+	 * Configures the stream. You need to call this before calling {@link #getSessionDescription()}
 	 * to apply your configuration of the stream.
 	 */
 	public synchronized void configure() throws IllegalStateException, IOException {
 		super.configure();
 		mOrientation = mRequestedOrientation;
-	}	
-	
+	}
+
 	/**
 	 * Starts the stream.
-	 * This will also open the camera and display the preview 
+	 * This will also open the camera and display the preview
 	 * if {@link #startPreview()} has not already been called.
 	 */
 	public synchronized void start() throws IllegalStateException, IOException {
@@ -376,11 +384,11 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 		}
 	}
 
-	public synchronized void startPreview() 
-			throws CameraInUseException, 
-			InvalidSurfaceException, 
+	public synchronized void startPreview()
+			throws CameraInUseException,
+			InvalidSurfaceException,
 			RuntimeException {
-		
+
 		mCameraOpenedManually = true;
 		if (!mPreviewStarted) {
 			createCamera();
@@ -432,10 +440,10 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 			mMediaRecorder.setProfile( CamcorderProfile.get(mCameraId,CamcorderProfile.QUALITY_HIGH) );
 //			mMediaRecorder.setOrientationHint(90);
 
-			// The bandwidth actually consumed is often above what was requested 
+			// The bandwidth actually consumed is often above what was requested
 			mMediaRecorder.setVideoEncodingBitRate((int)(mRequestedQuality.bitrate*0.8));
 
-			// We write the output of the camera in a local socket instead of a file !			
+			// We write the output of the camera in a local socket instead of a file !
 			// This one little trick makes streaming feasible quiet simply: data from the camera
 			// can then be manipulated at the other end of the socket
 			FileDescriptor fd = null;
@@ -496,7 +504,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 			// Uses dequeueInputBuffer to feed the encoder
 			encodeWithMediaCodecMethod1();
 		}
-	}	
+	}
 
 	/**
 	 * Video encoding is done by a MediaCodec.
@@ -534,7 +542,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 		mMediaCodec = MediaCodec.createByCodecName(name);
 		MediaFormat mediaFormat = MediaFormat.createVideoFormat("video/avc", mQuality.resX, mQuality.resY);
 		mediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, mQuality.bitrate);
-		mediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, mQuality.framerate);	
+		mediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, mQuality.framerate);
 		mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, format);
 		mediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 		mMediaCodec.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -572,7 +580,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 			}
 
 		};
-		
+
 		for (int i=0;i<10;i++) mCamera.addCallbackBuffer(new byte[convertor.getBufferSize()]);
 		mCamera.setPreviewCallbackWithBuffer(callback);
 
@@ -588,7 +596,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 	 * Video encoding is done by a MediaCodec.
 	 * But here we will use the buffer-to-surface method
 	 */
-	@SuppressLint({ "InlinedApi", "NewApi" })	
+	@SuppressLint({ "InlinedApi", "NewApi" })
 	protected void encodeWithMediaCodecMethod2() throws RuntimeException, IOException {
 
 		Log.d(TAG,"Video encoded using the MediaCodec API with a surface");
@@ -624,10 +632,10 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 	}
 
 	/**
-	 * Returns a description of the stream using SDP. 
+	 * Returns a description of the stream using SDP.
 	 * This method can only be called after {@link Stream#configure()}.
 	 * @throws IllegalStateException Thrown when {@link Stream#configure()} wa not called.
-	 */	
+	 */
 	public abstract String getSessionDescription() throws IllegalStateException;
 
 	/**
@@ -661,7 +669,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 	protected synchronized void createCamera() throws RuntimeException {
 		if (mSurfaceView == null)
 			throw new InvalidSurfaceException("Invalid surface !");
-		if (mSurfaceView.getHolder() == null || !mSurfaceReady) 
+		if (mSurfaceView.getHolder() == null || !mSurfaceReady)
 			throw new InvalidSurfaceException("Invalid surface !");
 
 		if (mCamera == null) {
@@ -681,7 +689,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 						stop();
 					} else {
 						Log.e(TAG,"Error unknown with the camera: "+error);
-					}	
+					}
 				}
 			});
 
@@ -725,7 +733,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 				}
 				parameters.setRecordingHint( false );
 				mCamera.setParameters(parameters);
-				mCamera.setDisplayOrientation(mOrientation);
+				setCameraDisplayOrientation();
 
 				try {
 					if (mMode == MODE_MEDIACODEC_API_2) {
@@ -760,7 +768,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 			mCameraLooper.quit();
 			mUnlocked = false;
 			mPreviewStarted = false;
-		}	
+		}
 	}
 
 //	protected synchronized void updateCamera() throws RuntimeException {
@@ -830,7 +838,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 
 		try {
 			mCamera.setParameters(parameters);
-			mCamera.setDisplayOrientation(mOrientation);
+			setCameraDisplayOrientation();
 			mCamera.startPreview();
 			mPreviewStarted = true;
 			mUpdated = true;
@@ -839,6 +847,59 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 			throw e;
 		}
 	}
+
+    protected void setCameraDisplayOrientation() {
+        int result;
+
+        /* check API level. If upper API level 21, re-calculate orientation. */
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            android.hardware.Camera.CameraInfo info =
+                    new android.hardware.Camera.CameraInfo();
+            android.hardware.Camera.getCameraInfo(mCameraId, info);
+            int degrees = getRotationalOffset();
+            int cameraOrientation = info.orientation;
+            if (info.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+                /* compensate the mirror */
+                result = (cameraOrientation + degrees) % 360;
+                result = (360 - result) % 360;
+            } else {
+                result = (cameraOrientation - degrees + 360) % 360;
+            }
+
+        } else {
+            /* if API level is lower than 21, use the default value */
+            result = mOrientation;
+        }
+
+		Log.d(TAG, "Set final display orientation to " + result);
+        mCamera.setDisplayOrientation(result);
+    }
+
+    /**
+     * @see <a
+     * href="http://stackoverflow.com/questions/12216148/android-screen-orientation-differs-between-devices">SO
+     * post</a>
+     */
+    private int getRotationalOffset() {
+        final int rotationOffset;
+        // Check "normal" screen orientation and adjust accordingly
+        int naturalOrientation = ((WindowManager) mActivityRef.get().getSystemService(Context.WINDOW_SERVICE))
+                .getDefaultDisplay().getRotation();
+        if (naturalOrientation == Surface.ROTATION_0) {
+            rotationOffset = 0;
+        } else if (naturalOrientation == Surface.ROTATION_90) {
+            rotationOffset = 90;
+        } else if (naturalOrientation == Surface.ROTATION_180) {
+            rotationOffset = 180;
+        } else if (naturalOrientation == Surface.ROTATION_270) {
+            rotationOffset = 270;
+        } else {
+            // just hope for the best (shouldn't happen)
+            rotationOffset = 0;
+        }
+        return rotationOffset;
+    }
 
 	protected void lockCamera() {
 		if (mUnlocked) {
@@ -855,7 +916,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 	protected void unlockCamera() {
 		if (!mUnlocked) {
 			Log.d(TAG,"Unlocking camera");
-			try {	
+			try {
 				mCamera.unlock();
 			} catch (Exception e) {
 				Log.e(TAG,e.getMessage());
@@ -867,7 +928,7 @@ public abstract class VideoStream extends MediaStream implements SensorEventList
 
 	/**
 	 * Computes the average frame rate at which the preview callback is called.
-	 * We will then use this average frame rate with the MediaCodec.  
+	 * We will then use this average frame rate with the MediaCodec.
 	 * Blocks the thread in which this function is called.
 	 */
 //	private void measureFramerate() {
